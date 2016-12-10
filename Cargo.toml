@@ -1,0 +1,6 @@
+[package]
+name = "arc-cell"
+version = "0.1.0"
+authors = ["Connor Hilarides <connorcpu@live.com>"]
+
+[dependencies]
