@@ -2,5 +2,9 @@
 name = "arc-cell"
 version = "0.1.0"
 authors = ["Connor Hilarides <connorcpu@live.com>"]
+repository = "https://github.com/Connorcpu/arc-cell"
+license = "MIT"
+description = "Helper for a simple Cell-like object containing Arc/Weak"
+keywords = ["sync", "arc", "cell"]
 
 [dependencies]
