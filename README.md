@@ -1,5 +1,7 @@
 # arc-cell
 
+[Documentation](https://docs.rs/arc-cell/)
+
 A simple library for a concurrent Cell-like object containing an Arc/Weak reference.
 
 ```toml
