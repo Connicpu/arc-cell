@@ -30,5 +30,9 @@ impl Thing {
         thing.self_ref.store(&thing);
         thing
     }
+    
+    pub fn clone_ref(&self) -> Arc<Thing> {
+        self.self_ref.upgrade().expect("This should be valid if we have a valid self")
+    }
 }
 ```
