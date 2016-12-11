@@ -1,4 +1,5 @@
 use std::sync::{Arc, RwLock, Weak};
+use std::fmt;
 
 /// A Cell for containing a strong reference
 pub struct ArcCell<T> {
@@ -23,6 +24,12 @@ impl<T> ArcCell<T> {
     pub fn set(&self, value: Arc<T>) {
         let mut inner = self.inner.write().expect("It should have been impossible for this to get poisoned");
         *inner = value;
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for ArcCell<T> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        self.get().fmt(fmt)
     }
 }
 
@@ -61,5 +68,11 @@ impl<T> WeakCell<T> {
     /// Downgrade a Strong pointer and store it in the cell
     pub fn store(&self, value: &Arc<T>) {
         self.set(Arc::downgrade(&value));
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for WeakCell<T> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        self.upgrade().fmt(fmt)
     }
 }
