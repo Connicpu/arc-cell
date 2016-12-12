@@ -8,4 +8,3 @@ description = "Helper for a simple Cell-like object containing Arc/Weak"
 keywords = ["sync", "arc", "cell"]
 
 [dependencies]
-spin = { version = "^0.4.5", default-features = false }
