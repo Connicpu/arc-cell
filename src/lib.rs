@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use std::fmt;
 use std::marker::PhantomData;
 use std::mem;
@@ -31,7 +33,7 @@ impl<T> ArcCell<T> {
         put_val(&self.inner, arc_to_val(ptr));
     }
 
-    /// Get the pointer contained in this cell as it exists at this moment
+    /// Get the currently contained pointer and return it, incrementing the reference count
     pub fn get(&self) -> Option<Arc<T>> {
         let ptr = self.inner_take();
         let res = ptr.clone();
@@ -39,16 +41,23 @@ impl<T> ArcCell<T> {
         res
     }
 
-    /// Set the pointer for the next observer
+    /// Change the currently stored pointer, returning the old value.
     pub fn set(&self, value: Option<Arc<T>>) -> Option<Arc<T>> {
         let old = self.inner_take();
         self.put(value);
         old
     }
 
-    /// Take the inner value, replacing it with None
+    /// Take the currently stored pointer, replacing it with None
     pub fn take(&self) -> Option<Arc<T>> {
         self.set(None)
+    }
+}
+
+impl<T> Clone for ArcCell<T> {
+    fn clone(&self) -> ArcCell<T> {
+        let value = self.get();
+        ArcCell::new(value)
     }
 }
 
@@ -114,7 +123,20 @@ impl<T> WeakCell<T> {
 
     /// Downgrade a Strong pointer and store it in the cell
     pub fn store(&self, value: &Arc<T>) {
-        self.set(Some(Arc::downgrade(&value)));
+        self.set(Some(Arc::downgrade(value)));
+    }
+}
+
+impl<T> Clone for WeakCell<T> {
+    fn clone(&self) -> WeakCell<T> {
+        let value = self.get();
+        WeakCell::new(value)
+    }
+}
+
+impl<T> Default for WeakCell<T> {
+    fn default() -> Self {
+        WeakCell::new(None)
     }
 }
 
