@@ -54,6 +54,12 @@ impl<T> ArcCell<T> {
     }
 }
 
+impl<T> Drop for ArcCell<T> {
+    fn drop(&mut self) {
+        self.take();
+    }
+}
+
 impl<T> Clone for ArcCell<T> {
     fn clone(&self) -> ArcCell<T> {
         let value = self.get();
@@ -127,6 +133,12 @@ impl<T> WeakCell<T> {
     }
 }
 
+impl<T> Drop for WeakCell<T> {
+    fn drop(&mut self) {
+        self.take();
+    }
+}
+
 impl<T> Clone for WeakCell<T> {
     fn clone(&self) -> WeakCell<T> {
         let value = self.get();
@@ -149,7 +161,7 @@ impl<T: fmt::Debug> fmt::Debug for WeakCell<T> {
 #[cfg(test)]
 mod tests {
     use crate::{ArcCell, WeakCell};
-    use std::sync::Arc;
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
     #[test]
     fn arc_cell() {
@@ -171,6 +183,21 @@ mod tests {
         assert_eq!(cell.upgrade(), Some(data.clone()));
         drop(data);
         assert_eq!(cell.upgrade(), None);
+    }
+
+    #[test]
+    fn cell_drops() {
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+        struct DropCount;
+        impl std::ops::Drop for DropCount {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        {
+            let _cell = ArcCell::new(Some(Arc::new(DropCount)));
+        }
+        assert_eq!(DROPS.load(Ordering::SeqCst), 1);
     }
 }
 
