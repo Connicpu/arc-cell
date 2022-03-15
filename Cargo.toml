@@ -1,6 +1,6 @@
 [package]
 name = "arc-cell"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Connie Hilarides <conni_h@outlook.com>"]
 repository = "https://github.com/Connicpu/arc-cell"
 license = "MIT"

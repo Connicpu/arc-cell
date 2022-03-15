@@ -9,12 +9,17 @@ use std::{
     },
 };
 
+/// Atomically swappable/clonable Arc pointer value.
 pub type ArcCell<T> = AtomicCell<Arc<T>>;
+/// Atomically swappable/clonable Weak Arc pointer value.
 pub type WeakCell<T> = AtomicCell<Weak<T>>;
 
+/// Atomically swappable/clonable/optional Arc pointer value.
 pub type OptionalArcCell<T> = AtomicCell<Option<Arc<T>>>;
+/// Atomically swappable/clonable/optional Weak Arc pointer value.
 pub type OptionalWeakCell<T> = AtomicCell<Option<Weak<T>>>;
 
+/// An atomic-based cell designed for holding Arc-style pointers.
 pub struct AtomicCell<T: AtomicCellStorable> {
     value: AtomicUsize,
     _marker: PhantomData<T>,
