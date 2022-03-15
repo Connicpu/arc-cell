@@ -6,7 +6,7 @@ A simple library for a concurrent Cell-like object containing an Arc/Weak refere
 
 ```toml
 [dependencies]
-arc-cell = "0.2"
+arc-cell = "0.3"
 ```
 
 # Usage
@@ -23,7 +23,7 @@ pub struct Thing {
 
 impl Thing {
     pub fn update(&self, data: Arc<Vec<u8>>) {
-        self.data.set(Some(data));
+        self.data.set(data);
     }
 }
 ```
@@ -42,7 +42,7 @@ pub struct Thing {
 impl Thing {
     pub fn new() -> Arc<Thing> {
         let thing = Arc::new(Thing {
-            self_ref: WeakCell::new(None),
+            self_ref: WeakCell::empty(),
         });
         
         thing.self_ref.store(&thing);

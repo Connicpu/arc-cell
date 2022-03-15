@@ -1,160 +1,218 @@
 #![doc = include_str!("../README.md")]
 
-use std::fmt;
-use std::marker::PhantomData;
-use std::mem;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+use std::{
+    fmt::{Debug, Formatter},
+    marker::PhantomData,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Weak,
+    },
+};
 
-const EMPTY: usize = 0;
-// It's impossible for an Arc to have this address because the inside is at least 2 usizes big
-const TAKEN: usize = usize::MAX;
+pub type ArcCell<T> = AtomicCell<Arc<T>>;
+pub type WeakCell<T> = AtomicCell<Weak<T>>;
 
-/// A Cell for containing a strong reference
-pub struct ArcCell<T> {
-    inner: AtomicUsize,
-    _marker: PhantomData<Arc<T>>,
+pub type OptionalArcCell<T> = AtomicCell<Option<Arc<T>>>;
+pub type OptionalWeakCell<T> = AtomicCell<Option<Weak<T>>>;
+
+pub struct AtomicCell<T: AtomicCellStorable> {
+    value: AtomicUsize,
+    _marker: PhantomData<T>,
 }
 
-impl<T> ArcCell<T> {
-    /// Constructs an ArcCell which initially points to `value`
-    pub fn new(value: Option<Arc<T>>) -> ArcCell<T> {
-        ArcCell {
-            inner: AtomicUsize::new(arc_to_val(value)),
+impl<T: AtomicCellStorable> AtomicCell<T> {
+    /// Create a new AtomicCell with the given initial value.
+    pub fn new(value: T) -> Self {
+        AtomicCell {
+            value: AtomicUsize::new(value.into_value()),
             _marker: PhantomData,
         }
     }
 
-    fn inner_take(&self) -> Option<Arc<T>> {
-        unsafe { val_to_arc(take_val(&self.inner)) }
-    }
-
-    fn put(&self, ptr: Option<Arc<T>>) {
-        put_val(&self.inner, arc_to_val(ptr));
-    }
-
-    /// Get the currently contained pointer and return it, incrementing the reference count
-    pub fn get(&self) -> Option<Arc<T>> {
-        let ptr = self.inner_take();
-        let res = ptr.clone();
-        self.put(ptr);
-        res
-    }
-
-    /// Change the currently stored pointer, returning the old value.
-    pub fn set(&self, value: Option<Arc<T>>) -> Option<Arc<T>> {
-        let old = self.inner_take();
-        self.put(value);
+    /// Replace the value in the cell, returning the old value.
+    pub fn set(&self, value: T) -> T {
+        let old = self.internal_take();
+        self.internal_put(value);
         old
     }
 
-    /// Take the currently stored pointer, replacing it with None
-    pub fn take(&self) -> Option<Arc<T>> {
-        self.set(None)
+    fn internal_take(&self) -> T {
+        unsafe {
+            let mut current = self.value.load(Ordering::SeqCst);
+            T::from_value(loop {
+                // Try to take it ourselves
+                match self.value.compare_exchange_weak(
+                    current,
+                    T::TAKEN_VALUE,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(val) if val != T::TAKEN_VALUE => break val,
+                    Ok(_) => current = T::TAKEN_VALUE, // Someone else was working on it, retry
+                    Err(new_val) => current = new_val, // Someone got to it first, retry
+                }
+            })
+        }
+    }
+
+    fn internal_put(&self, value: T) {
+        let _old = self.value.swap(value.into_value(), Ordering::SeqCst);
+        debug_assert_eq!(_old, T::TAKEN_VALUE);
     }
 }
 
-impl<T> Drop for ArcCell<T> {
+impl<T: AtomicCellStorable> Drop for AtomicCell<T> {
     fn drop(&mut self) {
-        self.take();
-    }
-}
-
-impl<T> Clone for ArcCell<T> {
-    fn clone(&self) -> ArcCell<T> {
-        let value = self.get();
-        ArcCell::new(value)
-    }
-}
-
-impl<T> Default for ArcCell<T> {
-    fn default() -> Self {
-        ArcCell::new(None)
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for ArcCell<T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        self.get().fmt(fmt)
-    }
-}
-
-/// A Cell for containing a weak reference
-pub struct WeakCell<T> {
-    inner: AtomicUsize,
-    _marker: PhantomData<Weak<T>>,
-}
-
-impl<T> WeakCell<T> {
-    /// Constructs the weak cell with the given value.
-    pub fn new(value: Option<Weak<T>>) -> WeakCell<T> {
-        WeakCell {
-            inner: AtomicUsize::new(unsafe { mem::transmute(value) }),
-            _marker: PhantomData,
+        unsafe {
+            let _ = T::from_value(self.value.load(Ordering::SeqCst));
         }
     }
+}
 
-    fn inner_take(&self) -> Option<Weak<T>> {
-        unsafe { val_to_weak(take_val(&self.inner)) }
+impl<T: AtomicCellStorable + Clone> AtomicCell<T> {
+    /// Returns a clone of the stored value.
+    pub fn get(&self) -> T {
+        let value = self.internal_take();
+        let copy = value.clone();
+        self.internal_put(value);
+        copy
+    }
+}
+
+impl<T: AtomicCellStorable + Clone> Clone for AtomicCell<T> {
+    fn clone(&self) -> AtomicCell<T> {
+        AtomicCell::new(self.get())
+    }
+}
+
+impl<T: AtomicCellStorable + Default> AtomicCell<T> {
+    /// Take the value stored in the cell, replacing it with the default value.
+    pub fn take(&self) -> T {
+        // We must construct the new value first in case it panics.
+        let new_value = T::default();
+
+        let value = self.internal_take();
+        self.internal_put(new_value);
+
+        value
+    }
+}
+
+impl<T: AtomicCellStorable + Default> Default for AtomicCell<T> {
+    fn default() -> Self {
+        AtomicCell::new(T::default())
+    }
+}
+
+impl<T> AtomicCell<Weak<T>> {
+    /// Create a new AtomicCell with an empty Weak<T> stored inside.
+    pub fn empty() -> Self {
+        AtomicCell::new(Weak::new())
     }
 
-    fn put(&self, ptr: Option<Weak<T>>) {
-        put_val(&self.inner, weak_to_val(ptr));
+    /// Attempt to upgrade the Weak pointer to a strong Arc pointer.
+    pub fn upgrade(&self) -> Option<Arc<T>> {
+        self.get().upgrade()
     }
 
-    /// Get the Weak pointer as it is at this moment
-    pub fn get(&self) -> Option<Weak<T>> {
-        let ptr = self.inner_take();
-        let res = ptr.clone();
-        self.put(ptr);
-        res
+    /// Downgrade the Arc value and store it in the cell.
+    pub fn store(&self, arc: &Arc<T>) {
+        self.set(Arc::downgrade(arc));
     }
+}
 
-    /// Set a Weak pointer you currently have as the pointer in this cell
-    pub fn set(&self, value: Option<Weak<T>>) -> Option<Weak<T>> {
-        let old = self.inner_take();
-        self.put(value);
-        old
-    }
-
-    /// Resets the stored value to be empty
-    pub fn take(&self) -> Option<Weak<T>> {
-        self.set(None)
-    }
-
-    /// Try to upgrade the Weak pointer as it is now into a Strong pointer
+impl<T> AtomicCell<Option<Weak<T>>> {
+    /// Attempt to upgrade the Weak pointer to a strong Arc pointer (if it is not None).
     pub fn upgrade(&self) -> Option<Arc<T>> {
         self.get().and_then(|weak| weak.upgrade())
     }
 
-    /// Downgrade a Strong pointer and store it in the cell
-    pub fn store(&self, value: &Arc<T>) {
-        self.set(Some(Arc::downgrade(value)));
+    /// Downgrade the Arc value and store it in the cell.
+    pub fn store(&self, arc: &Arc<T>) {
+        self.set(Some(Arc::downgrade(arc)));
     }
 }
 
-impl<T> Drop for WeakCell<T> {
-    fn drop(&mut self) {
-        self.take();
+impl<T: AtomicCellStorable + Clone + Debug> Debug for AtomicCell<T> {
+    fn fmt(&self, fmt: &mut Formatter) -> std::fmt::Result {
+        fmt.debug_tuple("AtomicCell").field(&self.get()).finish()
     }
 }
 
-impl<T> Clone for WeakCell<T> {
-    fn clone(&self) -> WeakCell<T> {
-        let value = self.get();
-        WeakCell::new(value)
+/// It is up to the implementer to ensure this is safe to implement.
+///
+/// `from_value` and `into_value` should never panic nor return TAKEN_VALUE.
+/// It is also up to the implementer to ensure that if T implements Clone,
+/// its implementation of clone() will never panic.
+pub unsafe trait AtomicCellStorable {
+    /// A sentinel value that a valid instance should never occupy.
+    const TAKEN_VALUE: usize;
+    /// Convert an instance into a raw value, transferring ownership.
+    fn into_value(self) -> usize;
+    /// Convert a raw value back into an instance.
+    unsafe fn from_value(value: usize) -> Self;
+}
+
+unsafe impl<T> AtomicCellStorable for Arc<T> {
+    const TAKEN_VALUE: usize = usize::MAX;
+
+    fn into_value(self) -> usize {
+        Arc::into_raw(self) as usize
+    }
+
+    unsafe fn from_value(value: usize) -> Self {
+        Arc::from_raw(value as *const T)
     }
 }
 
-impl<T> Default for WeakCell<T> {
-    fn default() -> Self {
-        WeakCell::new(None)
+unsafe impl<T> AtomicCellStorable for Weak<T> {
+    // This must be MAX-1 because MAX is the sentinel value Weak uses for the empty state.
+    const TAKEN_VALUE: usize = usize::MAX - 1;
+
+    fn into_value(self) -> usize {
+        Weak::into_raw(self) as usize
+    }
+
+    unsafe fn from_value(value: usize) -> Self {
+        Weak::from_raw(value as *const T)
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for WeakCell<T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        self.upgrade().fmt(fmt)
+const EMPTY_OPTION: usize = 0;
+
+unsafe impl<T> AtomicCellStorable for Option<Arc<T>> {
+    const TAKEN_VALUE: usize = <Arc<T> as AtomicCellStorable>::TAKEN_VALUE;
+
+    fn into_value(self) -> usize {
+        match self {
+            None => EMPTY_OPTION,
+            Some(arc) => Arc::into_raw(arc) as usize,
+        }
+    }
+
+    unsafe fn from_value(value: usize) -> Self {
+        match value {
+            EMPTY_OPTION => None,
+            value => Some(Arc::from_raw(value as *const T)),
+        }
+    }
+}
+
+unsafe impl<T> AtomicCellStorable for Option<Weak<T>> {
+    const TAKEN_VALUE: usize = <Weak<T> as AtomicCellStorable>::TAKEN_VALUE;
+
+    fn into_value(self) -> usize {
+        match self {
+            None => EMPTY_OPTION,
+            Some(arc) => Weak::into_raw(arc) as usize,
+        }
+    }
+
+    unsafe fn from_value(value: usize) -> Self {
+        match value {
+            EMPTY_OPTION => None,
+            value => Some(Weak::from_raw(value as *const T)),
+        }
     }
 }
 
@@ -168,17 +226,17 @@ mod tests {
         let data1 = Arc::new(5);
         let data2 = Arc::new(6);
 
-        let cell = ArcCell::new(Some(data1));
-        assert_eq!(cell.get().as_deref(), Some(&5));
-        cell.set(Some(data2));
-        assert_eq!(cell.get().as_deref(), Some(&6));
+        let cell = ArcCell::new(data1);
+        assert_eq!(*cell.get(), 5);
+        cell.set(data2);
+        assert_eq!(*cell.get(), 6);
     }
 
     #[test]
     fn weak_cell() {
         let data = Arc::new(5);
 
-        let cell = WeakCell::new(None);
+        let cell = WeakCell::empty();
         cell.store(&data);
         assert_eq!(cell.upgrade(), Some(data.clone()));
         drop(data);
@@ -195,54 +253,8 @@ mod tests {
             }
         }
         {
-            let _cell = ArcCell::new(Some(Arc::new(DropCount)));
+            let _cell = ArcCell::new(Arc::new(DropCount));
         }
         assert_eq!(DROPS.load(Ordering::SeqCst), 1);
-    }
-}
-
-fn take_val(inner: &AtomicUsize) -> usize {
-    let mut ptr = inner.load(Ordering::SeqCst);
-    loop {
-        // Try to take it ourselves
-        match inner.compare_exchange_weak(ptr, TAKEN, Ordering::SeqCst, Ordering::SeqCst) {
-            Ok(TAKEN) => ptr = TAKEN, // Someone else wass working on it, retry
-            Ok(ptr) => break ptr,
-            Err(new_ptr) => ptr = new_ptr, // Someone got to it first, retry
-        }
-    }
-}
-
-fn put_val(inner: &AtomicUsize, val: usize) {
-    inner.store(val, Ordering::SeqCst);
-}
-
-fn arc_to_val<T>(ptr: Option<Arc<T>>) -> usize {
-    match ptr {
-        Some(ptr) => Arc::into_raw(ptr) as usize,
-        None => EMPTY,
-    }
-}
-
-unsafe fn val_to_arc<T>(val: usize) -> Option<Arc<T>> {
-    match val {
-        TAKEN => panic!("Something terrible has happened"),
-        EMPTY => None,
-        ptr => Some(Arc::from_raw(ptr as *const T)),
-    }
-}
-
-fn weak_to_val<T>(ptr: Option<Weak<T>>) -> usize {
-    match ptr {
-        Some(ptr) => Weak::into_raw(ptr) as usize,
-        None => EMPTY,
-    }
-}
-
-unsafe fn val_to_weak<T>(val: usize) -> Option<Weak<T>> {
-    match val {
-        TAKEN => panic!("Something terrible has happened"),
-        EMPTY => None,
-        ptr => Some(Weak::from_raw(ptr as *const T)),
     }
 }
