@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![cfg_attr(feature = "const-new", feature(const_fn_trait_bound))]
 
 use std::{
     fmt::{Debug, Formatter},
@@ -56,6 +57,10 @@ impl<T: AtomicCellStorable> AtomicCell<T> {
                     Ok(_) => current = T::TAKEN_VALUE, // Someone else was working on it, retry
                     Err(new_val) => current = new_val, // Someone got to it first, retry
                 }
+
+                // Hint to the CPU we're in a spin loop to reduce power consumption and allow
+                // another hyperthread to possibly start.
+                core::hint::spin_loop();
             })
         }
     }
@@ -106,6 +111,16 @@ impl<T: AtomicCellStorable + Default> AtomicCell<T> {
 impl<T: AtomicCellStorable + Default> Default for AtomicCell<T> {
     fn default() -> Self {
         AtomicCell::new(T::default())
+    }
+}
+
+#[cfg(feature = "const-new")]
+impl<T: AtomicCellStorable + AtomicCellConstInit> AtomicCell<T> {
+    pub const fn const_new() -> Self {
+        AtomicCell {
+            value: AtomicUsize::new(T::DEFAULT_VALUE),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -221,10 +236,25 @@ unsafe impl<T> AtomicCellStorable for Option<Weak<T>> {
     }
 }
 
+pub unsafe trait AtomicCellConstInit {
+    const DEFAULT_VALUE: usize;
+}
+
+unsafe impl<T> AtomicCellConstInit for Option<Arc<T>> {
+    const DEFAULT_VALUE: usize = EMPTY_OPTION;
+}
+
+unsafe impl<T> AtomicCellConstInit for Option<Weak<T>> {
+    const DEFAULT_VALUE: usize = EMPTY_OPTION;
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{ArcCell, WeakCell};
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     #[test]
     fn arc_cell() {
